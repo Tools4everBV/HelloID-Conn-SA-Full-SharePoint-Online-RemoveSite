@@ -1,0 +1,10 @@
+[
+    {
+        "name":  "spSiteTitle",
+        "value":  "{{form.selectedSite.DisplayName}}"
+    },
+    {
+        "name":  "spSiteUrl",
+        "value":  "{{form.selectedSite.Url}}"
+    }
+]
