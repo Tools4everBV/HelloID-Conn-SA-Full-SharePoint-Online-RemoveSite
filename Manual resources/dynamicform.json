@@ -1,5 +1,16 @@
 [
     {
+        "templateOptions":  {
+
+                            },
+        "type":  "markdown",
+        "summaryVisibility":  "Hide element",
+        "body":  "**Beware that removing a site, is actually deleting a M365 group. Everything associated with the group is deleted as well!**",
+        "requiresTemplateOptions":  false,
+        "requiresKey":  false,
+        "requiresDataSource":  false
+    },
+    {
         "key":  "searchValue",
         "templateOptions":  {
                                 "label":  "Search",
@@ -9,7 +20,8 @@
         "type":  "input",
         "summaryVisibility":  "Show",
         "requiresTemplateOptions":  true,
-        "requiresKey":  true
+        "requiresKey":  true,
+        "requiresDataSource":  false
     },
     {
         "key":  "selectedSite",
@@ -23,8 +35,20 @@
                                                                  "field":  "DisplayName"
                                                              },
                                                              {
-                                                                 "headerName":  "Url",
-                                                                 "field":  "Url"
+                                                                 "headerName":  "Description",
+                                                                 "field":  "Description"
+                                                             },
+                                                             {
+                                                                 "headerName":  "Mail Nick Name",
+                                                                 "field":  "MailNickName"
+                                                             },
+                                                             {
+                                                                 "headerName":  "Site",
+                                                                 "field":  "Site"
+                                                             },
+                                                             {
+                                                                 "headerName":  "Group Id",
+                                                                 "field":  "GroupId"
                                                              }
                                                          ],
                                              "height":  300,
@@ -49,6 +73,7 @@
         "type":  "grid",
         "summaryVisibility":  "Show",
         "requiresTemplateOptions":  true,
-        "requiresKey":  true
+        "requiresKey":  true,
+        "requiresDataSource":  true
     }
 ]
