@@ -6,7 +6,7 @@
 $portalUrl = "https://CUSTOMER.helloid.com"
 $apiKey = "API_KEY"
 $apiSecret = "API_SECRET"
-$delegatedFormAccessGroupNames = @("Users") #Only unique names are supported. Groups must exist!
+$delegatedFormAccessGroupNames = @("") #Only unique names are supported. Groups must exist!
 $delegatedFormCategories = @("SharePoint") #Only unique names are supported. Categories will be created if not exists
 $script:debugLogging = $false #Default value: $false. If $true, the HelloID resource GUIDs will be shown in the logging
 $script:duplicateForm = $false #Default value: $false. If $true, the HelloID resource names will be changed to import a duplicate Form
@@ -16,29 +16,25 @@ $script:duplicateFormSuffix = "_tmp" #the suffix will be added to all HelloID re
 #NOTE: You can also update the HelloID Global variable values afterwards in the HelloID Admin Portal: https://<CUSTOMER>.helloid.com/admin/variablelibrary
 $globalHelloIDVariables = [System.Collections.Generic.List[object]]@();
 
-#Global variable #1 >> SharePointAdminPWD
+#Global variable #1 >> AADAppId
 $tmpName = @'
-SharePointAdminPWD
+AADAppId
 '@ 
-$tmpValue = "" 
-$globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "True"});
-
-#Global variable #2 >> SharePointAdminUser
-$tmpName = @'
-SharePointAdminUser
-'@ 
-$tmpValue = @'
-user@customer.onmicrosoft.com
-'@ 
+$tmpValue = ""
 $globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
 
-#Global variable #3 >> SharePointBaseUrl
+#Global variable #2 >> AADAppSecret
 $tmpName = @'
-SharePointBaseUrl
+AADAppSecret
 '@ 
-$tmpValue = @'
-https://customer-admin.sharepoint.com
+$tmpValue = "" 
+$globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
+
+#Global variable #3 >> AADtenantID
+$tmpName = @'
+AADtenantID
 '@ 
+$tmpValue = "" 
 $globalHelloIDVariables.Add([PSCustomObject]@{name = $tmpName; value = $tmpValue; secret = "False"});
 
 
@@ -104,7 +100,7 @@ function Invoke-HelloIDGlobalVariable {
                 secret   = $Secret;
                 ItemType = 0;
             }    
-            $body = ConvertTo-Json -InputObject $body
+            $body = ConvertTo-Json -InputObject $body -Depth 100
     
             $uri = ($script:PortalBaseUrl + "api/v1/automation/variable")
             $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false -Body $body
@@ -150,7 +146,7 @@ function Invoke-HelloIDAutomationTask {
                 objectGuid          = $ObjectGuid;
                 variables           = (ConvertFrom-Json-WithEmptyArray($Variables));
             }
-            $body = ConvertTo-Json -InputObject $body
+            $body = ConvertTo-Json -InputObject $body -Depth 100
     
             $uri = ($script:PortalBaseUrl +"api/v1/automationtasks/powershell")
             $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false -Body $body
@@ -205,7 +201,7 @@ function Invoke-HelloIDDatasource {
                 script             = $DatasourcePsScript;
                 input              = (ConvertFrom-Json-WithEmptyArray($DatasourceInput));
             }
-            $body = ConvertTo-Json -InputObject $body
+            $body = ConvertTo-Json -InputObject $body -Depth 100
       
             $uri = ($script:PortalBaseUrl +"api/v1/datasource")
             $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false -Body $body
@@ -270,10 +266,11 @@ function Invoke-HelloIDDelegatedForm {
     param(
         [parameter(Mandatory)][String]$DelegatedFormName,
         [parameter(Mandatory)][String]$DynamicFormGuid,
-        [parameter()][String][AllowEmptyString()]$AccessGroups,
+        [parameter()][Array][AllowEmptyString()]$AccessGroups,
         [parameter()][String][AllowEmptyString()]$Categories,
         [parameter(Mandatory)][String]$UseFaIcon,
         [parameter()][String][AllowEmptyString()]$FaIcon,
+        [parameter()][String][AllowEmptyString()]$task,
         [parameter(Mandatory)][Ref]$returnObject
     )
     $delegatedFormCreated = $false
@@ -293,11 +290,16 @@ function Invoke-HelloIDDelegatedForm {
                 name            = $DelegatedFormName;
                 dynamicFormGUID = $DynamicFormGuid;
                 isEnabled       = "True";
-                accessGroups    = (ConvertFrom-Json-WithEmptyArray($AccessGroups));
                 useFaIcon       = $UseFaIcon;
                 faIcon          = $FaIcon;
-            }    
-            $body = ConvertTo-Json -InputObject $body
+                task            = ConvertFrom-Json -inputObject $task;
+            }
+            if(-not[String]::IsNullOrEmpty($AccessGroups)) { 
+                $body += @{
+                    accessGroups    = (ConvertFrom-Json-WithEmptyArray($AccessGroups));
+                }
+            }
+            $body = ConvertTo-Json -InputObject $body -Depth 100
     
             $uri = ($script:PortalBaseUrl +"api/v1/delegatedforms")
             $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false -Body $body
@@ -322,6 +324,8 @@ function Invoke-HelloIDDelegatedForm {
     $returnObject.value.guid = $delegatedFormGuid
     $returnObject.value.created = $delegatedFormCreated
 }
+
+
 <# Begin: HelloID Global Variables #>
 foreach ($item in $globalHelloIDVariables) {
 	Invoke-HelloIDGlobalVariable -Name $item.name -Value $item.value -Secret $item.secret 
@@ -332,56 +336,77 @@ foreach ($item in $globalHelloIDVariables) {
 <# Begin: HelloID Data sources #>
 <# Begin: DataSource "Sharepoint-generate-table-sites-wildcard" #>
 $tmpPsScript = @'
-$connected = $false
-$searchValue = $datasource.searchValue
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
 try {
-	Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
-	$pwd = ConvertTo-SecureString -string $SharePointAdminPWD -AsPlainText -Force
-	$cred = New-Object System.Management.Automation.PSCredential $SharePointAdminUser, $pwd
-	$null = Connect-SPOService -Url $SharePointBaseUrl -Credential $cred
-    Write-Information "Connected to Microsoft SharePoint"
-    $connected = $true
-}
-catch
-{	
-    Write-Error "Could not connect to Microsoft SharePoint. Error: $($_.Exception.Message)"
-    Write-Warning "Failed to connect to Microsoft SharePoint"
-}
+    $searchValue = $datasource.searchValue
+    $searchQuery = "*$searchValue*"
+      
+      
+    if([String]::IsNullOrEmpty($searchValue) -eq $true){
+        return
+    }else{
+        Write-Information -Message "Generating Microsoft Graph API Access Token user.."
 
-if ($connected)
-{    
-	try {
-        #Write-Output $searchValue
-	    $sites = Get-SPOSite -Filter "url -like 'sites/$($searchValue)'" -Limit ALL
+        $baseUri = "https://login.microsoftonline.com/"
+        $authUri = $baseUri + "$AADTenantID/oauth2/token"
 
-       ForEach($Site in $sites)
-        {
-            #Write-Output $Site 
-            $returnObject = @{DisplayName=$Site.Title; Url=$Site.Url;}
-            Write-Output $returnObject                
+        $body = @{
+            grant_type      = "client_credentials"
+            client_id       = "$AADAppId"
+            client_secret   = "$AADAppSecret"
+            resource        = "https://graph.microsoft.com"
         }
-        
-	}
-	catch
-	{
-		Write-Error "Error getting SharePoint sitecollections. Error: $($_.Exception.Message)"
-		Write-Warning "Error getting SharePoint sitecollections"
-		return
-	}
-    finally
-    {        
-        Disconnect-SPOService
-        Remove-Module -Name Microsoft.Online.SharePoint.PowerShell
-    }
-}
-else
-{
-	return
-}
+ 
+        $Response = Invoke-RestMethod -Method POST -Uri $authUri -Body $body -ContentType 'application/x-www-form-urlencoded'
+        $accessToken = $Response.access_token;
 
+        Write-Information -Message "Searching for: $searchQuery"
+        #Add the authorization header to the request
+        $authorization = @{
+            Authorization = "Bearer $accesstoken";
+            'Content-Type' = "application/json";
+            Accept = "application/json";
+        }
+ 
+        $baseSearchUri = "https://graph.microsoft.com/"
+        $searchUri = $baseSearchUri + "v1.0/groups"
+        $groupsResponse = Invoke-RestMethod -Uri $searchUri -Method Get -Headers $authorization -Verbose:$false          
+
+        #Write-Information ($teamsResponse.value | ConvertTo-Json)
+        $groups = foreach($groupObject in $groupsResponse.value){
+            
+            if( $groupObject.displayName -like $searchQuery -or $groupObject.MailNickName -like $searchQuery -or $groupObject.Mailaddress -like $searchQuery ){
+                $groupObject
+            }
+        }
+
+        $resultCount = @($groups).Count
+        Write-Information -Message "Result count: $resultCount"
+         
+        if($resultCount -gt 0){
+            foreach($group in $groups){
+                $siteUri = $searchUri + "/" + $($group.Id)+ "/sites/root"
+                $site = Invoke-RestMethod -Uri $siteUri -Method Get -Headers $authorization -Verbose:$false
+                #Write-Information $site.WebUrl
+                $returnObject = @{DisplayName=$group.DisplayName; Description=$group.Description; MailNickName=$group.MailNickName; GroupId=$group.Id; Site=$site.WebUrl; SiteId=$site.id}
+                Write-Output $returnObject
+            }
+        } else {
+            return
+        }
+    }
+} catch {
+    
+    Write-Error -Message ("Error searching for Teams-enabled AzureAD groups. Error: $($_.Exception.Message)" + $errorDetailsMessage)
+    Write-Warning -Message "Error searching for Teams-enabled AzureAD groups"
+     
+    return
+}
 '@ 
 $tmpModel = @'
-[{"key":"DisplayName","type":0},{"key":"Url","type":0}]
+[{"key":"GroupId","type":0},{"key":"MailNickName","type":0},{"key":"SiteId","type":0},{"key":"Description","type":0},{"key":"DisplayName","type":0},{"key":"Site","type":0}]
 '@ 
 $tmpInput = @'
 [{"description":null,"translateDescription":false,"inputFieldType":1,"key":"searchValue","type":0,"options":1}]
@@ -396,7 +421,7 @@ Invoke-HelloIDDatasource -DatasourceName $dataSourceGuid_0_Name -DatasourceType 
 
 <# Begin: Dynamic Form "SharePoint - Remove Site" #>
 $tmpSchema = @"
-[{"key":"searchValue","templateOptions":{"label":"Search","placeholder":"Search site","required":true},"type":"input","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true},{"key":"selectedSite","templateOptions":{"label":"Sites","required":false,"grid":{"columns":[{"headerName":"Display Name","field":"DisplayName"},{"headerName":"Url","field":"Url"}],"height":300,"rowSelection":"single"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_0","input":{"propertyInputs":[{"propertyName":"searchValue","otherFieldValue":{"otherFieldKey":"searchValue"}}]}},"useFilter":true,"useDefault":false},"type":"grid","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true}]
+[{"templateOptions":{},"type":"markdown","summaryVisibility":"Hide element","body":"**Beware that removing a site, is actually deleting a M365 group. Everything associated with the group is deleted as well!**","requiresTemplateOptions":false,"requiresKey":false,"requiresDataSource":false},{"key":"searchValue","templateOptions":{"label":"Search","placeholder":"Search site","required":true},"type":"input","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":false},{"key":"selectedSite","templateOptions":{"label":"Sites","required":false,"grid":{"columns":[{"headerName":"Display Name","field":"DisplayName"},{"headerName":"Description","field":"Description"},{"headerName":"Mail Nick Name","field":"MailNickName"},{"headerName":"Site","field":"Site"},{"headerName":"Group Id","field":"GroupId"}],"height":300,"rowSelection":"single"},"dataSourceConfig":{"dataSourceGuid":"$dataSourceGuid_0","input":{"propertyInputs":[{"propertyName":"searchValue","otherFieldValue":{"otherFieldKey":"searchValue"}}]}},"useFilter":true,"useDefault":false},"type":"grid","summaryVisibility":"Show","requiresTemplateOptions":true,"requiresKey":true,"requiresDataSource":true}]
 "@ 
 
 $dynamicFormGuid = [PSCustomObject]@{} 
@@ -408,25 +433,31 @@ Invoke-HelloIDDynamicForm -FormName $dynamicFormName -FormSchema $tmpSchema  -re
 
 <# Begin: Delegated Form Access Groups and Categories #>
 $delegatedFormAccessGroupGuids = @()
-foreach($group in $delegatedFormAccessGroupNames) {
-    try {
-        $uri = ($script:PortalBaseUrl +"api/v1/groups/$group")
-        $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
-        $delegatedFormAccessGroupGuid = $response.groupGuid
-        $delegatedFormAccessGroupGuids += $delegatedFormAccessGroupGuid
-        
-        Write-Information "HelloID (access)group '$group' successfully found$(if ($script:debugLogging -eq $true) { ": " + $delegatedFormAccessGroupGuid })"
-    } catch {
-        Write-Error "HelloID (access)group '$group', message: $_"
+if(-not[String]::IsNullOrEmpty($delegatedFormAccessGroupNames)){
+    foreach($group in $delegatedFormAccessGroupNames) {
+        try {
+            $uri = ($script:PortalBaseUrl +"api/v1/groups/$group")
+            $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
+            $delegatedFormAccessGroupGuid = $response.groupGuid
+            $delegatedFormAccessGroupGuids += $delegatedFormAccessGroupGuid
+            
+            Write-Information "HelloID (access)group '$group' successfully found$(if ($script:debugLogging -eq $true) { ": " + $delegatedFormAccessGroupGuid })"
+        } catch {
+            Write-Error "HelloID (access)group '$group', message: $_"
+        }
+    }
+    if($null -ne $delegatedFormAccessGroupGuids){
+        $delegatedFormAccessGroupGuids = ($delegatedFormAccessGroupGuids | Select-Object -Unique | ConvertTo-Json -Depth 100 -Compress)
     }
 }
-$delegatedFormAccessGroupGuids = ($delegatedFormAccessGroupGuids | Select-Object -Unique | ConvertTo-Json -Compress)
 
 $delegatedFormCategoryGuids = @()
 foreach($category in $delegatedFormCategories) {
     try {
         $uri = ($script:PortalBaseUrl +"api/v1/delegatedformcategories/$category")
         $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false
+        $response = $response | Where-Object {$_.name.en -eq $category}
+        
         $tmpGuid = $response.delegatedFormCategoryGuid
         $delegatedFormCategoryGuids += $tmpGuid
         
@@ -436,7 +467,7 @@ foreach($category in $delegatedFormCategories) {
         $body = @{
             name = @{"en" = $category};
         }
-        $body = ConvertTo-Json -InputObject $body
+        $body = ConvertTo-Json -InputObject $body -Depth 100
 
         $uri = ($script:PortalBaseUrl +"api/v1/delegatedformcategories")
         $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $script:headers -ContentType "application/json" -Verbose:$false -Body $body
@@ -446,7 +477,7 @@ foreach($category in $delegatedFormCategories) {
         Write-Information "HelloID Delegated Form category '$category' successfully created$(if ($script:debugLogging -eq $true) { ": " + $tmpGuid })"
     }
 }
-$delegatedFormCategoryGuids = (ConvertTo-Json -InputObject $delegatedFormCategoryGuids -Compress)
+$delegatedFormCategoryGuids = (ConvertTo-Json -InputObject $delegatedFormCategoryGuids -Depth 100 -Compress)
 <# End: Delegated Form Access Groups and Categories #>
 
 <# Begin: Delegated Form #>
@@ -454,58 +485,10 @@ $delegatedFormRef = [PSCustomObject]@{guid = $null; created = $null}
 $delegatedFormName = @'
 SharePoint - Remove Site
 '@
-Invoke-HelloIDDelegatedForm -DelegatedFormName $delegatedFormName -DynamicFormGuid $dynamicFormGuid -AccessGroups $delegatedFormAccessGroupGuids -Categories $delegatedFormCategoryGuids -UseFaIcon "True" -FaIcon "fa fa-minus-circle" -returnObject ([Ref]$delegatedFormRef) 
-<# End: Delegated Form #>
-
-<# Begin: Delegated Form Task #>
-if($delegatedFormRef.created -eq $true) { 
-	$tmpScript = @'
-$connected = $false
-try {
-	Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
-	$pwd = ConvertTo-SecureString -string $SharePointAdminPWD -AsPlainText -Force
-	$cred = New-Object System.Management.Automation.PSCredential $SharePointAdminUser, $pwd
-	$null = Connect-SPOService -Url $SharePointBaseUrl -Credential $cred
-    HID-Write-Status -Message "Connected to Microsoft SharePoint" -Event Information
-    HID-Write-Summary -Message "Connected to Microsoft SharePoint" -Event Information
-	$connected = $true
-}
-catch
-{	
-    HID-Write-Status -Message "Could not connect to Microsoft SharePoint. Error: $($_.Exception.Message)" -Event Error
-    HID-Write-Summary -Message "Failed to connect to Microsoft SharePoint" -Event Failed
-}
-
-if ($connected)
-{
-	try {
-		Remove-SPOSite -Identity $spSiteUrl -NoWait -Confirm:$false
-		HID-Write-Status -Message "Removed Site [$spSiteTitle] with url [$spSiteUrl]" -Event Success
-		HID-Write-Summary -Message "Successfully removed Site [$spSiteTitle] with url [$spSiteUrl]" -Event Success
-	}
-	catch
-	{
-		HID-Write-Status -Message "Could not remove Site [$spSiteTitle]. Error: $($_.Exception.Message)" -Event Error
-		HID-Write-Summary -Message "Failed to remove Site [$spSiteTitle]" -Event Failed
-	}
-    finally
-    {        
-        Disconnect-SPOService
-        Remove-Module -Name Microsoft.Online.SharePoint.PowerShell
-    }
-}
-'@; 
-
-	$tmpVariables = @'
-[{"name":"spSiteTitle","value":"{{form.selectedSite.DisplayName}}","secret":false,"typeConstraint":"string"},{"name":"spSiteUrl","value":"{{form.selectedSite.Url}}","secret":false,"typeConstraint":"string"}]
+$tmpTask = @'
+{"name":"SharePoint - Remove Site","script":"# Set TLS to accept TLS, TLS 1.1 and TLS 1.2\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$baseGraphUri = \"https://graph.microsoft.com/\"\r\n\r\n$VerbosePreference = \"SilentlyContinue\"\r\n$InformationPreference = \"Continue\"\r\n$WarningPreference = \"Continue\"\r\n\r\n# variables configured in form\r\n$siteid = $form.selectedSite.GroupId\r\n$sitedisplayname = $form.selectedSite.DisplayName\r\n$sitename = $form.selectedSite.Description\r\n$siteurl = $form.selectedSite.Site\r\n\r\n# Create authorization token and add to headers\r\ntry{\r\n    Write-Information \"Generating Microsoft Graph API Access Token\"\r\n\r\n    $baseUri = \"https://login.microsoftonline.com/\"\r\n    $authUri = $baseUri + \"$AADTenantID/oauth2/token\"\r\n\r\n    $body = @{\r\n        grant_type    = \"client_credentials\"\r\n        client_id     = \"$AADAppId\"\r\n        client_secret = \"$AADAppSecret\"\r\n        resource      = \"https://graph.microsoft.com\"\r\n    }\r\n\r\n    $Response = Invoke-RestMethod -Method POST -Uri $authUri -Body $body -ContentType \u0027application/x-www-form-urlencoded\u0027\r\n    $accessToken = $Response.access_token;\r\n\r\n    #Add the authorization header to the request\r\n    $authorization = @{\r\n        Authorization  = \"Bearer $accesstoken\";\r\n        \u0027Content-Type\u0027 = \"application/json\";\r\n        Accept         = \"application/json\";\r\n    }\r\n}\r\ncatch{\r\n    throw \"Could not generate Microsoft Graph API Access Token. Error: $($_.Exception.Message)\"    \r\n}\r\n\r\ntry {\r\n    Write-Information \"Deleting Site [$sitedisplayname] with url [$siteurl].\"\r\n\r\n    $deleteSiteUri = $baseGraphUri + \"v1.0/groups/$siteid\"\r\n\r\n    $deleteSite = Invoke-RestMethod -Method DELETE -Uri $deleteSiteUri -Headers $authorization -Verbose:$false\r\n    \r\n    Write-Information \"Successfully deleted Site [$sitedisplayname] with url [$siteurl].\"\r\n    $Log = @{\r\n        Action            = \"DeleteResource\" # optional. ENUM (undefined = default) \r\n        System            = \"AzureActiveDirectory\" # optional (free format text) \r\n        Message           = \"Successfully deleted site [$sitedisplayname] with description [$siteurl].\" # required (free format text) \r\n        IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) \r\n        TargetDisplayName = $sitename # optional (free format text)\r\n        TargetIdentifier  = $siteid # optional (free format text)\r\n    }\r\n    #send result back  \r\n    Write-Information -Tags \"Audit\" -MessageData $log\r\n}\r\ncatch\r\n{\r\n    Write-Error \"Failed to delete Site [$sitedisplayname] with url [$siteurl]. Error: $($_.Exception.Message)\"\r\n    $Log = @{\r\n        Action            = \"DeleteResource\" # optional. ENUM (undefined = default) \r\n        System            = \"AzureActiveDirectory\" # optional (free format text) \r\n        Message           = \"Failed to delete site [$sitedisplayname] with url [$siteurl].\" # required (free format text) \r\n        IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) \r\n        TargetDisplayName = $sitename # optional (free format text)\r\n        TargetIdentifier  = $siteid # optional (free format text)\r\n    }\r\n    #send result back  \r\n    Write-Information -Tags \"Audit\" -MessageData $log\r\n}\r\n","runInCloud":false}
 '@ 
 
-	$delegatedFormTaskGuid = [PSCustomObject]@{} 
-$delegatedFormTaskName = @'
-SharePoint-remove-site
-'@
-	Invoke-HelloIDAutomationTask -TaskName $delegatedFormTaskName -UseTemplate "False" -AutomationContainer "8" -Variables $tmpVariables -PowershellScript $tmpScript -ObjectGuid $delegatedFormRef.guid -ForceCreateTask $true -returnObject ([Ref]$delegatedFormTaskGuid) 
-} else {
-	Write-Warning "Delegated form '$delegatedFormName' already exists. Nothing to do with the Delegated Form task..." 
-}
-<# End: Delegated Form Task #>
+Invoke-HelloIDDelegatedForm -DelegatedFormName $delegatedFormName -DynamicFormGuid $dynamicFormGuid -AccessGroups $delegatedFormAccessGroupGuids -Categories $delegatedFormCategoryGuids -UseFaIcon "True" -FaIcon "fa fa-minus-circle" -task $tmpTask -returnObject ([Ref]$delegatedFormRef) 
+<# End: Delegated Form #>
+
